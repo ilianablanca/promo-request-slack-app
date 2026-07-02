@@ -8,7 +8,7 @@ const app = new App({
 });
 
 // ── Constantes ──────────────────────────────────────────────
-const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // Dani Blanca
+const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // Dani Blanca 
 const APPROVER_OTHER = 'U09QUKD5AUR';     // María Cervantes
 
 const TIPOS_CON_PUNTOS = ['cashback', 'reto', 'award'];
@@ -115,7 +115,7 @@ function blocksPage5(a) {
         ...(a.business_line ? { initial_option: opt(a.business_line, a.business_line) } : {}) } },
     { type: 'input', block_id: 'b_audiencia', label: { type: 'plain_text', text: 'Audiencia' },
       dispatch_action: true,
-      element: { type: 'static_select', action_id: 'audiencia_select',
+      element: { type: 'static_select', action_id: 'audiencia',
         options: ['Nuevos', 'Recurrentes', 'Lista específica'].map(t => opt(t, t)),
         ...(a.audiencia ? { initial_option: opt(a.audiencia, a.audiencia) } : {}) } },
   ];
@@ -140,7 +140,7 @@ function blocksPage6(a) {
         optional: true, ...(a.comentarios ? { initial_value: a.comentarios } : {}) } },
     { type: 'input', block_id: 'b_aprobado', label: { type: 'plain_text', text: '¿El descuento ya fue aprobado?' },
       dispatch_action: true,
-      element: { type: 'static_select', action_id: 'aprobado_select',
+      element: { type: 'static_select', action_id: 'aprobado',
         options: ['Sí', 'No'].map(t => opt(t, t)),
         ...(a.aprobado ? { initial_option: opt(a.aprobado, a.aprobado) } : {}) } },
   ];
@@ -234,14 +234,14 @@ app.action('prev_page', async ({ ack, body, client }) => {
 });
 
 // ── Redibujo dentro de la misma pantalla (condicionales) ─────
-app.action('audiencia_select', async ({ ack, body, client }) => {
+app.action('audiencia', async ({ ack, body, client }) => {
   await ack();
   const meta = JSON.parse(body.view.private_metadata || '{}');
   const merged = { ...meta.answers, ...extractStateValues(body.view.state.values) };
   await client.views.update({ view_id: body.view.id, hash: body.view.hash, view: buildView('p5', merged) });
 });
 
-app.action('aprobado_select', async ({ ack, body, client }) => {
+app.action('aprobado', async ({ ack, body, client }) => {
   await ack();
   const meta = JSON.parse(body.view.private_metadata || '{}');
   const merged = { ...meta.answers, ...extractStateValues(body.view.state.values) };
