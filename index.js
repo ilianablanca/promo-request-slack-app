@@ -8,7 +8,7 @@ const app = new App({
 });
 
 // ── Constantes ──────────────────────────────────────────────
-const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // tú
+const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // Dani Blanca
 const APPROVER_OTHER = 'U09QUKD5AUR';     // María Cervantes
 
 const TIPOS_CON_PUNTOS = ['cashback', 'reto', 'award'];
@@ -191,7 +191,6 @@ function buildView(step, a) {
 
   const nav = [];
   if (step !== 'p1') nav.push({ type: 'button', action_id: 'prev_page', text: { type: 'plain_text', text: '← Atrás' }, value: step });
-  if (!isFinal) nav.push({ type: 'button', action_id: 'next_page', text: { type: 'plain_text', text: 'Siguiente →' }, value: step, style: 'primary' });
 
   const view = {
     type: 'modal',
@@ -199,9 +198,9 @@ function buildView(step, a) {
     private_metadata: JSON.stringify({ step, answers: a }),
     title: { type: 'plain_text', text: 'Solicitud de promo' },
     close: { type: 'plain_text', text: 'Cancelar' },
+    submit: { type: 'plain_text', text: isFinal ? 'Enviar' : 'Siguiente' },
     blocks: [...blocks, ...(nav.length ? [{ type: 'actions', block_id: 'b_nav', elements: nav }] : [])],
   };
-  if (isFinal) view.submit = { type: 'plain_text', text: 'Enviar' };
   return view;
 }
 
@@ -214,13 +213,15 @@ app.command('/promo-request', async ({ ack, body, client }) => {
   });
 });
 
-// ── Navegación: Siguiente ────────────────────────────────────
-app.action('next_page', async ({ ack, body, client }) => {
-  await ack();
+// ── Avanzar de pantalla (vía submit nativo) ──────────────────
+app.view('promo_step_view', async ({ ack, body }) => {
   const meta = JSON.parse(body.view.private_metadata || '{}');
   const merged = { ...meta.answers, ...extractStateValues(body.view.state.values) };
   const to = nextStep(meta.step, merged);
-  await client.views.update({ view_id: body.view.id, hash: body.view.hash, view: buildView(to, merged) });
+  await ack({
+    response_action: 'update',
+    view: buildView(to, merged),
+  });
 });
 
 // ── Navegación: Atrás ────────────────────────────────────────
