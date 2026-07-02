@@ -8,7 +8,7 @@ const app = new App({
 });
 
 // ── Constantes ──────────────────────────────────────────────
-const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // tú
+const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // Dani Blanca
 const APPROVER_OTHER = 'U09QUKD5AUR';     // María Cervantes
 
 const TIPOS_CON_PUNTOS = ['cashback', 'reto', 'award'];
@@ -127,10 +127,10 @@ function blocksPage5(a) {
 
 function blocksPage6(a) {
   const blocks = [
-    { type: 'input', block_id: 'b_comentarios', label: { type: 'plain_text', text: 'Comentarios adicionales' },
+    { type: 'input', block_id: 'b_comentarios', label: { type: 'plain_text', text: 'Comentarios adicionales' }, optional: true,
       element: { type: 'plain_text_input', action_id: 'comentarios', multiline: true,
         placeholder: { type: 'plain_text', text: 'Ej. cupón válido para merchant X en fecha Y, y merchant Z en fecha W; o lista/segmento específico de usuarios' },
-        optional: true, ...(a.comentarios ? { initial_value: a.comentarios } : {}) } },
+        ...(a.comentarios ? { initial_value: a.comentarios } : {}) } },
     { type: 'input', block_id: 'b_aprobado', label: { type: 'plain_text', text: '¿El descuento ya fue aprobado?' },
       element: { type: 'static_select', action_id: 'aprobado',
         options: ['Sí', 'No'].map(t => opt(t, t)),
