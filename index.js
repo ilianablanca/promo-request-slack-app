@@ -8,10 +8,20 @@ const app = new App({
 });
 
 // ── Constantes ──────────────────────────────────────────────
-const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // Dani Blanca
+const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // tú
 const APPROVER_OTHER = 'U09QUKD5AUR';     // María Cervantes
 
 const TIPOS_CON_PUNTOS = ['cashback', 'reto', 'award'];
+
+const TIPO_OPTIONS = [
+  { text: { type: 'plain_text', text: 'Promocode' }, value: 'promocode' },
+  { text: { type: 'plain_text', text: 'Campaña de cashback' }, value: 'cashback' },
+  { text: { type: 'plain_text', text: 'Reto' }, value: 'reto' },
+  { text: { type: 'plain_text', text: 'Award' }, value: 'award' },
+  { text: { type: 'plain_text', text: '0% fee' }, value: 'fee0' },
+  { text: { type: 'plain_text', text: 'Automática' }, value: 'automatica' },
+  { text: { type: 'plain_text', text: 'Otro' }, value: 'otro' },
+];
 
 // ── Helpers de estado ───────────────────────────────────────
 function extractStateValues(values) {
@@ -33,6 +43,10 @@ function opt(text, value) {
   return { text: { type: 'plain_text', text }, value };
 }
 
+function findOpt(options, value) {
+  return options.find(o => o.value === value);
+}
+
 // ── Constructores de bloques por pantalla ───────────────────
 function blocksPage1(a) {
   return [
@@ -44,11 +58,8 @@ function blocksPage1(a) {
         ...(a.equipo ? { initial_option: opt(a.equipo, a.equipo) } : {}) } },
     { type: 'input', block_id: 'b_tipo', label: { type: 'plain_text', text: 'Tipo de promoción' },
       element: { type: 'static_select', action_id: 'tipo',
-        options: [
-          opt('Promocode', 'promocode'), opt('Campaña de cashback', 'cashback'), opt('Reto', 'reto'),
-          opt('Award', 'award'), opt('0% fee', 'fee0'), opt('Automática', 'automatica'), opt('Otro', 'otro'),
-        ],
-        ...(a.tipo ? { initial_option: opt(a.tipo, a.tipo) } : {}) } },
+        options: TIPO_OPTIONS,
+        ...(a.tipo ? { initial_option: findOpt(TIPO_OPTIONS, a.tipo) } : {}) } },
   ];
 }
 
