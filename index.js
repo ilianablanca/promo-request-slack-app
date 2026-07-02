@@ -8,7 +8,7 @@ const app = new App({
 });
 
 // ── Constantes ──────────────────────────────────────────────
-const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // Dani Blanca 
+const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // tú
 const APPROVER_OTHER = 'U09QUKD5AUR';     // María Cervantes
 
 const TIPOS_CON_PUNTOS = ['cashback', 'reto', 'award'];
@@ -114,17 +114,10 @@ function blocksPage5(a) {
         options: ['BNPL', 'VC', 'PC', 'Walmart', 'Ali', 'Todos', 'Combo'].map(t => opt(t, t)),
         ...(a.business_line ? { initial_option: opt(a.business_line, a.business_line) } : {}) } },
     { type: 'input', block_id: 'b_audiencia', label: { type: 'plain_text', text: 'Audiencia' },
-      dispatch_action: true,
       element: { type: 'static_select', action_id: 'audiencia',
-        options: ['Nuevos', 'Recurrentes', 'Lista específica'].map(t => opt(t, t)),
+        options: ['Nuevos', 'Recurrentes', 'Todos'].map(t => opt(t, t)),
         ...(a.audiencia ? { initial_option: opt(a.audiencia, a.audiencia) } : {}) } },
   ];
-  if (a.audiencia === 'Lista específica') {
-    blocks.push({ type: 'input', block_id: 'b_especificacion_audiencia', label: { type: 'plain_text', text: 'Especificación de la audiencia' },
-      element: { type: 'plain_text_input', action_id: 'especificacion_audiencia', multiline: true,
-        placeholder: { type: 'plain_text', text: 'Link de la lista, o condiciones que deben cumplir los usuarios' },
-        ...(a.especificacion_audiencia ? { initial_value: a.especificacion_audiencia } : {}) } });
-  }
   blocks.push({ type: 'input', block_id: 'b_pay_now', label: { type: 'plain_text', text: '¿Incluye Pay Now?' },
     element: { type: 'static_select', action_id: 'pay_now',
       options: ['Sí', 'No'].map(t => opt(t, t)),
@@ -136,23 +129,13 @@ function blocksPage6(a) {
   const blocks = [
     { type: 'input', block_id: 'b_comentarios', label: { type: 'plain_text', text: 'Comentarios adicionales' },
       element: { type: 'plain_text_input', action_id: 'comentarios', multiline: true,
-        placeholder: { type: 'plain_text', text: 'Ej. cupón válido para merchant X en fecha Y, y merchant Z en fecha W' },
+        placeholder: { type: 'plain_text', text: 'Ej. cupón válido para merchant X en fecha Y, y merchant Z en fecha W; o lista/segmento específico de usuarios' },
         optional: true, ...(a.comentarios ? { initial_value: a.comentarios } : {}) } },
     { type: 'input', block_id: 'b_aprobado', label: { type: 'plain_text', text: '¿El descuento ya fue aprobado?' },
-      dispatch_action: true,
       element: { type: 'static_select', action_id: 'aprobado',
         options: ['Sí', 'No'].map(t => opt(t, t)),
         ...(a.aprobado ? { initial_option: opt(a.aprobado, a.aprobado) } : {}) } },
   ];
-  if (a.aprobado === 'Sí') {
-    blocks.push({ type: 'input', block_id: 'b_aprobado_por', label: { type: 'plain_text', text: '¿Quién aprobó?' },
-      element: { type: 'users_select', action_id: 'aprobado_por', ...(a.aprobado_por ? { initial_user: a.aprobado_por } : {}) } });
-  } else if (a.aprobado === 'No') {
-    blocks.push({ type: 'input', block_id: 'b_audiencia_no_aprobado', label: { type: 'plain_text', text: '¿Para quién es la promo?' },
-      element: { type: 'static_select', action_id: 'audiencia_no_aprobado',
-        options: ['Nuevos', 'Recurrentes', 'Todos'].map(t => opt(t, t)),
-        ...(a.audiencia_no_aprobado ? { initial_option: opt(a.audiencia_no_aprobado, a.audiencia_no_aprobado) } : {}) } });
-  }
   return blocks;
 }
 
@@ -233,21 +216,6 @@ app.action('prev_page', async ({ ack, body, client }) => {
   await client.views.update({ view_id: body.view.id, hash: body.view.hash, view: buildView(to, merged) });
 });
 
-// ── Redibujo dentro de la misma pantalla (condicionales) ─────
-app.action('audiencia', async ({ ack, body, client }) => {
-  await ack();
-  const meta = JSON.parse(body.view.private_metadata || '{}');
-  const merged = { ...meta.answers, ...extractStateValues(body.view.state.values) };
-  await client.views.update({ view_id: body.view.id, hash: body.view.hash, view: buildView('p5', merged) });
-});
-
-app.action('aprobado', async ({ ack, body, client }) => {
-  await ack();
-  const meta = JSON.parse(body.view.private_metadata || '{}');
-  const merged = { ...meta.answers, ...extractStateValues(body.view.state.values) };
-  await client.views.update({ view_id: body.view.id, hash: body.view.hash, view: buildView('p6', merged) });
-});
-
 // ── Submit final ─────────────────────────────────────────────
 app.view('promo_final_submit', async ({ ack, body, client }) => {
   await ack();
@@ -266,7 +234,7 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
   // Determinar a quién etiquetar si no está aprobado
   let tagUser = null;
   if (a.aprobado === 'No') {
-    tagUser = a.audiencia_no_aprobado === 'Nuevos' ? APPROVER_NEW_USERS : APPROVER_OTHER;
+    tagUser = a.audiencia === 'Nuevos' ? APPROVER_NEW_USERS : APPROVER_OTHER;
   }
 
   const payload = {
@@ -288,7 +256,7 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
 
   // Mensaje de confirmación en el canal
   const aprobacionLinea = a.aprobado === 'Sí'
-    ? `✅ Aprobado por <@${a.aprobado_por}>`
+    ? `✅ Descuento ya aprobado`
     : `⚠️ Pendiente de aprobación — atención <@${tagUser}>`;
 
   const resumen = [
