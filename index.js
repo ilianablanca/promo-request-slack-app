@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { App } = require('@slack/bolt');
 const fetch = require('node-fetch');
+const Papa = require('papaparse');
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -54,6 +55,12 @@ function extractStateValues(values) {
 function opt(text, value) { return { text: { type: 'plain_text', text }, value }; }
 function findOpt(options, value) { return options.find(o => o.value === value); }
 function findOpts(options, values) { return options.filter(o => (values || []).includes(o.value)); }
+function valueFromText(options, text) {
+  if (!text) return null;
+  const t = text.trim().toLowerCase();
+  const found = options.find(o => o.text.text.trim().toLowerCase() === t);
+  return found ? found.value : null;
+}
 function reqLabel(text) { return { type: 'plain_text', text: `${text} *` }; }
 function hintBlock(text) { return { type: 'context', elements: [{ type: 'mrkdwn', text }] }; }
 
@@ -266,10 +273,203 @@ function validatePage2(a) {
   return errors;
 }
 
+// Validación compartida entre el modal individual y la carga masiva (una sola fuente de verdad).
+// A medida que se definan más reglas de negocio, agregarlas aquí para que apliquen a ambos flujos.
+function validateRow(a) {
+  const errores = [];
+  if (!a.tipo) errores.push('Tipo de promoción vacío o no reconocido (revisa que coincida con el texto exacto de las opciones)');
+  if (TIPOS_COMO_PROMOCODE.includes(a.tipo) && (!a.codigo || a.codigo.toUpperCase() === 'NA')) {
+    errores.push('Código del cupón vacío (obligatorio para Promocode / Descuento Afiliados)');
+  }
+  if (!a.merchant_name_compra) errores.push('Merchant name vacío');
+  if (!a.merchant_id_compra) errores.push('Merchant id vacío');
+  if (!a.fecha_inicio) errores.push('Fecha inicio vacía o con formato inválido (usa AAAA-MM-DD)');
+  if (!a.fecha_fin) errores.push('Fecha fin vacía o con formato inválido (usa AAAA-MM-DD)');
+  if (a.valor_descuento && !NUMERIC_RE.test(a.valor_descuento)) errores.push('Valor del descuento no es un número');
+  if (a.minimo_compra && a.minimo_compra.toUpperCase() !== 'NA' && !NUMERIC_RE.test(a.minimo_compra)) errores.push('Mínimo de compra no es un número ni NA');
+  if (a.maximo_descuento && a.maximo_descuento.toUpperCase() !== 'NA' && !NUMERIC_RE.test(a.maximo_descuento)) errores.push('Descuento máximo no es un número ni NA');
+  if (!a.usos_por_usuario) errores.push('Usos por usuario vacío');
+  if (!a.business_line || !a.business_line.length) errores.push('Business line vacío');
+  if (!a.audiencia) errores.push('Audiencia vacía o no reconocida');
+  if (!a.pay_now) errores.push('Pay Now vacío o no reconocido (usa Sí/No)');
+  if (TIPOS_CON_PUNTOS.includes(a.tipo) && !a.vigencia_puntos) {
+    errores.push('Vigencia de los puntos vacía (obligatoria para Cashback/Reto/Award)');
+  }
+  return errores;
+}
+
 app.command('/promo-request', async ({ ack, body, client }) => {
   await ack();
   await client.views.open({ trigger_id: body.trigger_id, view: buildView('p1', {}) });
 });
+
+// ── Carga masiva vía CSV ──────────────────────────────────────
+const CSV_HEADER_MAP = {
+  'tipo': 'tipo',
+  'tipo de descuento': 'tipo_descuento',
+  'valor descuento': 'valor_descuento',
+  'código': 'codigo',
+  'codigo': 'codigo',
+  'mínimo de compra': 'minimo_compra',
+  'minimo de compra': 'minimo_compra',
+  'descuento máximo': 'maximo_descuento',
+  'descuento maximo': 'maximo_descuento',
+  'merchant name': 'merchant_name_compra',
+  'merchant id': 'merchant_id_compra',
+  'merchant channel': 'merchant_channel',
+  'fecha inicio': 'fecha_inicio',
+  'fecha fin': 'fecha_fin',
+  'horas del día': 'horas_dia',
+  'horas del dia': 'horas_dia',
+  'usos totales': 'usos_totales',
+  'usos por usuario': 'usos_por_usuario',
+  'business line': 'business_line',
+  'audiencia': 'audiencia',
+  'pay now': 'pay_now',
+  'comentarios': 'comentarios',
+  'aprobado': 'aprobado',
+  'merchant name gasto': 'merchant_name_gasto',
+  'merchant id gasto': 'merchant_id_gasto',
+  'mínimo de compra gasto': 'minimo_compra_gasto',
+  'minimo de compra gasto': 'minimo_compra_gasto',
+  'vigencia de los puntos': 'vigencia_puntos',
+};
+
+function buildBulkModal(a) {
+  return {
+    type: 'modal',
+    callback_id: 'promo_bulk_submit',
+    title: { type: 'plain_text', text: 'Carga masiva de promos' },
+    close: { type: 'plain_text', text: 'Cancelar' },
+    submit: { type: 'plain_text', text: 'Procesar' },
+    blocks: [
+      { type: 'input', block_id: 'b_equipo_bulk', label: reqLabel('Equipo del requester'),
+        element: { type: 'static_select', action_id: 'equipo_bulk',
+          options: ['Business Development', 'Growth', 'KAMs', 'Risk', 'Merch Ops', 'Marketing', 'Affiliates'].map(t => opt(t, t)),
+          ...(a.equipo_bulk ? { initial_option: opt(a.equipo_bulk, a.equipo_bulk) } : {}) } },
+      { type: 'input', block_id: 'b_archivo_csv', label: reqLabel('Archivo CSV'),
+        element: { type: 'file_input', action_id: 'archivo_csv', filetypes: ['csv'], max_files: 1 } },
+      hintBlock('El CSV debe tener el mismo header que la plantilla acordada. Una fila = una promo-code. Si el Tipo involucra puntos (Cashback/Reto/Award), incluye también las columnas de gasto de puntos.'),
+    ],
+  };
+}
+
+app.command('/promo-bulk', async ({ ack, body, client }) => {
+  await ack();
+  await client.views.open({ trigger_id: body.trigger_id, view: buildBulkModal({}) });
+});
+
+// Convierte una fila cruda del CSV (headers en español) a un objeto con las mismas llaves que usa el modal
+function normalizeCsvRow(rawRow) {
+  const a = {};
+  for (const key in rawRow) {
+    const mapped = CSV_HEADER_MAP[key.trim().toLowerCase()];
+    if (mapped) a[mapped] = (rawRow[key] || '').trim();
+  }
+  // Tipo: el CSV trae el texto visible (ej. "Reto", "Campaña de cashback"), hay que convertirlo al valor interno
+  if (a.tipo) {
+    a.tipo = valueFromText(TIPO_OPTIONS, a.tipo) || a.tipo;
+  }
+  // Business line: puede venir "BNPL, Walmart" → arreglo
+  if (a.business_line) {
+    a.business_line = a.business_line.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  return a;
+}
+
+app.view('promo_bulk_submit', async ({ ack, body, client }) => {
+  await ack();
+  const values = extractStateValuesRaw(body.view.state.values);
+  const equipo = values.equipo_bulk;
+  const fileInfo = (body.view.state.values.b_archivo_csv.archivo_csv.files || [])[0];
+  const requesterId = body.user.id;
+
+  if (!fileInfo) {
+    if (process.env.SLACK_CHANNEL_ID) {
+      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: `⚠️ <@${requesterId}> intentó una carga masiva sin adjuntar archivo.` });
+    }
+    return;
+  }
+
+  try {
+    // Descargar el contenido del CSV (archivo privado, requiere el Bot Token en el header)
+    const fileMeta = await client.files.info({ file: fileInfo.id });
+    const url = fileMeta.file.url_private_download;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+    const csvText = await res.text();
+
+    const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+    const rows = parsed.data;
+
+    let exitosas = 0;
+    const erroresPorFila = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const a = normalizeCsvRow(rows[i]);
+      a.equipo = equipo;
+      a.requester = requesterId;
+
+      const errores = validateRow(a);
+      if (errores.length) {
+        erroresPorFila.push(`Fila ${i + 2}: ${errores.join('; ')}`); // +2 = considerar header + índice 1-based
+        continue;
+      }
+
+      let requesterEmail = '';
+      try {
+        const info = await client.users.info({ user: requesterId });
+        requesterEmail = info.user.profile.email || '';
+      } catch (err) { /* se deja vacío si falla */ }
+
+      const payload = {
+        secret: process.env.APPS_SCRIPT_SECRET,
+        requesterEmail,
+        ...a,
+        business_line: Array.isArray(a.business_line) ? a.business_line.join(', ') : a.business_line,
+      };
+
+      try {
+        await fetch(process.env.APPS_SCRIPT_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        exitosas++;
+      } catch (err) {
+        erroresPorFila.push(`Fila ${i + 2}: error al escribir en Sheets (${err.message})`);
+      }
+    }
+
+    const resumen = [
+      `📦 *Carga masiva procesada*`,
+      `Requester: <@${requesterId}> (${equipo})`,
+      `✅ ${exitosas} promociones documentadas`,
+      erroresPorFila.length ? `⚠️ ${erroresPorFila.length} filas con error:\n${erroresPorFila.map(e => `• ${e}`).join('\n')}` : null,
+    ].filter(Boolean).join('\n');
+
+    if (process.env.SLACK_CHANNEL_ID) {
+      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: resumen });
+    }
+  } catch (err) {
+    console.error('Error procesando carga masiva:', err);
+    if (process.env.SLACK_CHANNEL_ID) {
+      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: `❌ <@${requesterId}> la carga masiva falló: ${err.message}` });
+    }
+  }
+});
+
+// Extrae valores simples (static_select, texto) de un state.values, sin los tipos especiales del modal principal
+function extractStateValuesRaw(values) {
+  const result = {};
+  for (const blockId in values) {
+    for (const actionId in values[blockId]) {
+      const el = values[blockId][actionId];
+      if (el.type === 'static_select') result[actionId] = el.selected_option ? el.selected_option.value : null;
+      else if (el.type === 'plain_text_input') result[actionId] = el.value || '';
+    }
+  }
+  return result;
+}
 
 app.view('promo_step_view', async ({ ack, body }) => {
   const meta = JSON.parse(body.view.private_metadata || '{}');
