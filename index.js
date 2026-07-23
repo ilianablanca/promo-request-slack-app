@@ -12,8 +12,8 @@ const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // tú
 const APPROVER_OTHER = 'U09QUKD5AUR';     // María Cervantes
 
 const TIPOS_CON_PUNTOS = ['cashback', 'reto', 'award'];
-const TIPOS_FORM_SIMPLE = ['fee0', 'downpayment0']; // 0% fee y 0 downpayment usan el formulario corto
-const TIPOS_COMO_PROMOCODE = ['promocode', 'afiliados']; // requieren Código del cupón obligatorio
+const TIPOS_FORM_SIMPLE = ['fee0', 'downpayment0'];
+const TIPOS_COMO_PROMOCODE = ['promocode', 'afiliados'];
 
 const TIPO_OPTIONS = [
   { text: { type: 'plain_text', text: 'Promocode' }, value: 'promocode' },
@@ -35,7 +35,6 @@ const NUMERIC_RE = /^\d+(\.\d+)?$/;
 const MERCHANT_ID_HINT = 'Escribe cada ID en su propio renglón (uno por línea). Para todos los comercios, escribe *promotionsall*.';
 const MERCHANT_NAME_HINT = 'Escribe el nombre del merchant tal como quieres que aparezca en los T&C. Cualquier error ortográfico se verá reflejado ahí. Para más de un merchant, sepáralos por coma y espacio.';
 
-// ── Helpers de estado ───────────────────────────────────────
 function extractStateValues(values) {
   const result = {};
   for (const blockId in values) {
@@ -52,29 +51,12 @@ function extractStateValues(values) {
   return result;
 }
 
-function opt(text, value) {
-  return { text: { type: 'plain_text', text }, value };
-}
+function opt(text, value) { return { text: { type: 'plain_text', text }, value }; }
+function findOpt(options, value) { return options.find(o => o.value === value); }
+function findOpts(options, values) { return options.filter(o => (values || []).includes(o.value)); }
+function reqLabel(text) { return { type: 'plain_text', text: `${text} *` }; }
+function hintBlock(text) { return { type: 'context', elements: [{ type: 'mrkdwn', text }] }; }
 
-function findOpt(options, value) {
-  return options.find(o => o.value === value);
-}
-
-function findOpts(options, values) {
-  return options.filter(o => (values || []).includes(o.value));
-}
-
-// Etiqueta con asterisco para campos obligatorios
-function reqLabel(text) {
-  return { type: 'plain_text', text: `${text} *` };
-}
-
-// Bloque de contexto usado como "hint" bajo un input (Block Kit no soporta hint nativo)
-function hintBlock(text) {
-  return { type: 'context', elements: [{ type: 'mrkdwn', text }] };
-}
-
-// ── Constructores de bloques por pantalla ───────────────────
 function blocksPage1(a) {
   return [
     { type: 'input', block_id: 'b_requester', label: reqLabel('Requester'),
@@ -91,12 +73,11 @@ function blocksPage1(a) {
 }
 
 function blocksPage2(a) {
-  const codigoOptional = !TIPOS_COMO_PROMOCODE.includes(a.tipo); // Código obligatorio para Promocode y Descuento Afiliados
-
+  const codigoOptional = !TIPOS_COMO_PROMOCODE.includes(a.tipo);
   return [
     { type: 'input', block_id: 'b_tipo_descuento', label: reqLabel('Tipo de descuento'),
       element: { type: 'static_select', action_id: 'tipo_descuento',
-        options: ['%', '$', 'Otro'].map(t => opt(t, t)), // se quitaron 'Puntos' y '0% comisión' (ya son flujos propios)
+        options: ['%', '$', 'Otro'].map(t => opt(t, t)),
         ...(a.tipo_descuento ? { initial_option: opt(a.tipo_descuento, a.tipo_descuento) } : {}) } },
     { type: 'input', block_id: 'b_valor_descuento', label: reqLabel('Valor del descuento'),
       element: { type: 'plain_text_input', action_id: 'valor_descuento',
@@ -158,13 +139,14 @@ function blocksPagePuntos(a) {
   ];
 }
 
-// ── Formulario corto: 0% fee / 0 downpayment ─────────────────
 function blocksPageSimple(a) {
   return [
     { type: 'input', block_id: 'b_minimo_compra_simple', label: reqLabel('Monto mínimo de compra'),
       element: { type: 'plain_text_input', action_id: 'minimo_compra_simple', ...(a.minimo_compra_simple ? { initial_value: a.minimo_compra_simple } : {}) } },
-    { type: 'input', block_id: 'b_duracion_simple', label: reqLabel('Duración'),
-      element: { type: 'plain_text_input', action_id: 'duracion_simple', placeholder: { type: 'plain_text', text: 'Ej. 30 días, o del 8 al 15 de julio' }, ...(a.duracion_simple ? { initial_value: a.duracion_simple } : {}) } },
+    { type: 'input', block_id: 'b_fecha_inicio_simple', label: reqLabel('Fecha inicio'),
+      element: { type: 'datepicker', action_id: 'fecha_inicio', ...(a.fecha_inicio ? { initial_date: a.fecha_inicio } : {}) } },
+    { type: 'input', block_id: 'b_fecha_fin_simple', label: reqLabel('Fecha fin'),
+      element: { type: 'datepicker', action_id: 'fecha_fin', ...(a.fecha_fin ? { initial_date: a.fecha_fin } : {}) } },
     { type: 'input', block_id: 'b_merchant_name_simple', label: reqLabel('Merchant name'),
       element: { type: 'plain_text_input', action_id: 'merchant_name_simple', multiline: true, ...(a.merchant_name_simple ? { initial_value: a.merchant_name_simple } : {}) } },
     hintBlock(MERCHANT_NAME_HINT),
@@ -228,14 +210,8 @@ function blocksPage6(a) {
   return blocks;
 }
 
-// ── Máquina de estados (orden de pantallas) ─────────────────
-function needsPuntos(a) {
-  return TIPOS_CON_PUNTOS.includes(a.tipo);
-}
-
-function isFormSimple(a) {
-  return TIPOS_FORM_SIMPLE.includes(a.tipo);
-}
+function needsPuntos(a) { return TIPOS_CON_PUNTOS.includes(a.tipo); }
+function isFormSimple(a) { return TIPOS_FORM_SIMPLE.includes(a.tipo); }
 
 function nextStep(step, a) {
   if (step === 'p1') return isFormSimple(a) ? 'p_simple' : 'p2';
@@ -271,7 +247,7 @@ function buildView(step, a) {
   const nav = [];
   if (step !== 'p1') nav.push({ type: 'button', action_id: 'prev_page', text: { type: 'plain_text', text: '← Atrás' }, value: step });
 
-  const view = {
+  return {
     type: 'modal',
     callback_id: isFinal ? 'promo_final_submit' : 'promo_step_view',
     private_metadata: JSON.stringify({ step, answers: a }),
@@ -280,38 +256,24 @@ function buildView(step, a) {
     submit: { type: 'plain_text', text: isFinal ? 'Enviar' : 'Siguiente' },
     blocks: [...blocks, ...(nav.length ? [{ type: 'actions', block_id: 'b_nav', elements: nav }] : [])],
   };
-  return view;
 }
 
-// Validación numérica de la pantalla 2 (Valor del descuento, Mínimo de compra, Descuento máximo)
 function validatePage2(a) {
   const errors = {};
-  if (a.valor_descuento && !NUMERIC_RE.test(a.valor_descuento)) {
-    errors['b_valor_descuento'] = 'Escribe solo un número (sin % ni $).';
-  }
-  if (a.minimo_compra && a.minimo_compra.toUpperCase() !== 'NA' && !NUMERIC_RE.test(a.minimo_compra)) {
-    errors['b_minimo_compra'] = 'Escribe solo un número, o NA si no aplica.';
-  }
-  if (a.maximo_descuento && a.maximo_descuento.toUpperCase() !== 'NA' && !NUMERIC_RE.test(a.maximo_descuento)) {
-    errors['b_maximo_descuento'] = 'Escribe solo un número, o NA si no aplica.';
-  }
+  if (a.valor_descuento && !NUMERIC_RE.test(a.valor_descuento)) errors['b_valor_descuento'] = 'Escribe solo un número (sin % ni $).';
+  if (a.minimo_compra && a.minimo_compra.toUpperCase() !== 'NA' && !NUMERIC_RE.test(a.minimo_compra)) errors['b_minimo_compra'] = 'Escribe solo un número, o NA si no aplica.';
+  if (a.maximo_descuento && a.maximo_descuento.toUpperCase() !== 'NA' && !NUMERIC_RE.test(a.maximo_descuento)) errors['b_maximo_descuento'] = 'Escribe solo un número, o NA si no aplica.';
   return errors;
 }
 
-// ── Abrir el modal ───────────────────────────────────────────
 app.command('/promo-request', async ({ ack, body, client }) => {
   await ack();
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: buildView('p1', {}),
-  });
+  await client.views.open({ trigger_id: body.trigger_id, view: buildView('p1', {}) });
 });
 
-// ── Avanzar de pantalla (vía submit nativo) ──────────────────
 app.view('promo_step_view', async ({ ack, body }) => {
   const meta = JSON.parse(body.view.private_metadata || '{}');
   const merged = { ...meta.answers, ...extractStateValues(body.view.state.values) };
-
   if (meta.step === 'p2') {
     const errors = validatePage2(merged);
     if (Object.keys(errors).length) {
@@ -319,15 +281,10 @@ app.view('promo_step_view', async ({ ack, body }) => {
       return;
     }
   }
-
   const to = nextStep(meta.step, merged);
-  await ack({
-    response_action: 'update',
-    view: buildView(to, merged),
-  });
+  await ack({ response_action: 'update', view: buildView(to, merged) });
 });
 
-// ── Navegación: Atrás ────────────────────────────────────────
 app.action('prev_page', async ({ ack, body, client }) => {
   await ack();
   const meta = JSON.parse(body.view.private_metadata || '{}');
@@ -336,7 +293,6 @@ app.action('prev_page', async ({ ack, body, client }) => {
   await client.views.update({ view_id: body.view.id, hash: body.view.hash, view: buildView(to, merged) });
 });
 
-// ── Campos condicionales: Audiencia → Segmento específico ────
 app.action('audiencia', async ({ ack, body, client }) => {
   await ack();
   const meta = JSON.parse(body.view.private_metadata || '{}');
@@ -344,7 +300,6 @@ app.action('audiencia', async ({ ack, body, client }) => {
   await client.views.update({ view_id: body.view.id, hash: body.view.hash, view: buildView(meta.step, merged) });
 });
 
-// ── Campos condicionales: ¿Aprobado? → ¿Por quién? ───────────
 app.action('aprobado', async ({ ack, body, client }) => {
   await ack();
   const meta = JSON.parse(body.view.private_metadata || '{}');
@@ -352,13 +307,11 @@ app.action('aprobado', async ({ ack, body, client }) => {
   await client.views.update({ view_id: body.view.id, hash: body.view.hash, view: buildView(meta.step, merged) });
 });
 
-// ── Submit final ─────────────────────────────────────────────
 app.view('promo_final_submit', async ({ ack, body, client }) => {
   await ack();
   const meta = JSON.parse(body.view.private_metadata || '{}');
   const a = { ...meta.answers, ...extractStateValues(body.view.state.values) };
 
-  // Resolver correo del requester
   let requesterEmail = '';
   try {
     const info = await client.users.info({ user: a.requester });
@@ -367,7 +320,6 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
     console.error('No se pudo resolver el correo del requester:', err);
   }
 
-  // Determinar a quién etiquetar si no está aprobado
   let tagUser = null;
   if (a.aprobado === 'No') {
     tagUser = a.audiencia === 'Nuevos' ? APPROVER_NEW_USERS : APPROVER_OTHER;
@@ -381,46 +333,40 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
     business_line_simple: Array.isArray(a.business_line_simple) ? a.business_line_simple.join(', ') : a.business_line_simple,
   };
 
-  // Enviar a Apps Script (Google Sheets)
   try {
-    await fetch(process.env.APPS_SCRIPT_URL, {
+    const res = await fetch(process.env.APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    const text = await res.text();
+    console.log('Respuesta de Apps Script:', text);
   } catch (err) {
     console.error('Error al escribir en Google Sheets vía Apps Script:', err);
   }
 
-  // Mensaje de confirmación en el canal
   const aprobacionLinea = a.aprobado === 'Sí'
     ? `✅ Descuento ya aprobado por ${a.aprobado_por || 'N/A'}`
     : `⚠️ Pendiente de aprobación — atención <@${tagUser}>`;
 
-  const resumen = isFormSimpleTipo(a.tipo)
-    ? [
-        `🎟️ *Nueva solicitud de promoción*`,
-        `Requester: <@${a.requester}> (${a.equipo})`,
-        `Tipo: ${a.tipo}`,
-        `Duración: ${a.duracion_simple || 'NA'}`,
-        aprobacionLinea,
-      ].join('\n')
-    : [
-        `🎟️ *Nueva solicitud de promoción*`,
-        `Requester: <@${a.requester}> (${a.equipo})`,
-        `Tipo: ${a.tipo} · Código: ${a.codigo || 'NA'}`,
-        `Vigencia: ${a.fecha_inicio} – ${a.fecha_fin}`,
-        aprobacionLinea,
-      ].join('\n');
+  const resumen = [
+    `🎟️ *Nueva solicitud de promoción*`,
+    `Requester: <@${a.requester}> (${a.equipo})`,
+    isFormSimple(a) ? `Tipo: ${a.tipo}` : `Tipo: ${a.tipo} · Código: ${a.codigo || 'NA'}`,
+    `Vigencia: ${a.fecha_inicio} – ${a.fecha_fin}`,
+    aprobacionLinea,
+  ].join('\n');
 
   if (process.env.SLACK_CHANNEL_ID) {
-    await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: resumen });
+    try {
+      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: resumen });
+    } catch (err) {
+      console.error('Error al mandar el mensaje de confirmación a Slack:', err);
+    }
+  } else {
+    console.log('SLACK_CHANNEL_ID no está configurado — se omite el mensaje de confirmación.');
   }
 });
-
-function isFormSimpleTipo(tipo) {
-  return TIPOS_FORM_SIMPLE.includes(tipo);
-}
 
 (async () => {
   const port = process.env.PORT || 3000;
