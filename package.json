@@ -6,9 +6,9 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@google-cloud/bigquery": "^7.0.0",
     "@slack/bolt": "^3.17.0",
     "dotenv": "^16.4.5",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "papaparse": "^5.4.1"
   }
 }
