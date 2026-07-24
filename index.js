@@ -2,15 +2,34 @@ require('dotenv').config();
 const { App } = require('@slack/bolt');
 const fetch = require('node-fetch');
 const Papa = require('papaparse');
+const { BigQuery } = require('@google-cloud/bigquery');
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
 
+// ── BigQuery (validador de Merchant ID) ─────────────────────
+// ⚠️ AJUSTA si el proyecto/dataset/tabla o los nombres de columna reales de
+// "obt_merchant" son distintos (merchant_id / merchant_name / merchant_channel).
+const BQ_PROJECT = process.env.BQ_PROJECT || 'apz-analytics-prod';
+const BQ_DATASET = process.env.BQ_DATASET || 'analytics';
+const BQ_MERCHANT_TABLE = process.env.BQ_MERCHANT_TABLE || 'obt_merchant';
+const BQ_FULL_TABLE = `\`${BQ_PROJECT}.${BQ_DATASET}.${BQ_MERCHANT_TABLE}\``;
+const bigquery = new BigQuery({ projectId: BQ_PROJECT });
+
 // ── Constantes ──────────────────────────────────────────────
-const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // tú
+const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // Dani Blanca
 const APPROVER_OTHER = 'U09QUKD5AUR';     // María Cervantes
+
+// Aprobadores oficiales (dropdown "¿Por quién?")
+const APPROVER_OPTIONS = [
+  { text: { type: 'plain_text', text: 'María Cervantes' }, value: 'U09QUKD5AUR' },
+  { text: { type: 'plain_text', text: 'Dani Blanca' }, value: 'U0AKGADMDCH' },
+  { text: { type: 'plain_text', text: 'Fer Berrón' }, value: 'U09TUBP3DSQ' },
+  { text: { type: 'plain_text', text: 'Omar Tueme' }, value: 'U078S6DJBU4' },
+  { text: { type: 'plain_text', text: 'Rodrigo Ayora' }, value: 'U0203NN2GD9' },
+];
 
 const TIPOS_CON_PUNTOS = ['cashback', 'reto', 'award'];
 const TIPOS_FORM_SIMPLE = ['fee0', 'downpayment0'];
@@ -26,6 +45,7 @@ const TIPO_OPTIONS = [
   { text: { type: 'plain_text', text: 'Descuento Afiliados' }, value: 'afiliados' },
   { text: { type: 'plain_text', text: 'Automática' }, value: 'automatica' },
   { text: { type: 'plain_text', text: 'Otro' }, value: 'otro' },
+  // 'Automática' eliminada a petición de María
 ];
 
 const BUSINESS_LINE_OPTIONS = ['BNPL', 'VC', 'PC', 'Walmart', 'Ali', 'Todos', 'Combo'];
@@ -60,6 +80,99 @@ function valueFromText(options, text) {
   const t = text.trim().toLowerCase();
   const found = options.find(o => o.text.text.trim().toLowerCase() === t);
   return found ? found.value : null;
+}
+function reqLabel(text) { return { type: 'plain_text', text: `${text} *` }; }
+function hintBlock(text) { return { type: 'context', elements: [{ type: 'mrkdwn', text }] }; }
+
+function splitList(text) {
+  return (text || '')
+    .split(/[\n,]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+// ── Validador de Merchant ID contra BigQuery (obt_merchant) ─
+// Reglas confirmadas con María:
+// - No es línea por línea: basta con que, para cada Merchant ID, exista
+//   AL MENOS UN nombre en el campo de texto libre que haga match con el
+//   merchant_name real de ese ID (el orden no importa, pero cada ID debe
+//   encontrar su propio match).
+// - Si un ID no existe o no encuentra match de nombre, se bloquea el avance.
+// - El canal (Online/Offline/Ambos) se calcula automáticamente.
+async function lookupMerchants(ids) {
+  if (!ids.length) return [];
+  const query = `
+    SELECT merchant_id, merchant_name, merchant_channel
+    FROM ${BQ_FULL_TABLE}
+    WHERE CAST(merchant_id AS STRING) IN UNNEST(@ids)
+  `;
+  const [rows] = await bigquery.query({ query, params: { ids } });
+  return rows;
+}
+
+async function validateMerchantsBatch(idsText, namesText) {
+  // "promotionsall" = comodín para todos los comercios, no se valida contra BigQuery
+  if ((idsText || '').trim().toLowerCase() === 'promotionsall') {
+    return { ok: true, canal: 'Ambos' };
+  }
+
+  const ids = splitList(idsText);
+  const namesInput = splitList(namesText).map(n => n.toLowerCase());
+
+  if (!ids.length) {
+    return { ok: false, error: 'Agrega al menos un Merchant ID.' };
+  }
+
+  const rows = await lookupMerchants(ids);
+  const byId = {};
+  for (const r of rows) byId[String(r.merchant_id)] = r;
+
+  const channels = new Set();
+
+  for (const id of ids) {
+    const row = byId[id];
+    if (!row) {
+      return { ok: false, error: `⚠️ El Merchant ID ${id} no existe en el catálogo.` };
+    }
+    const canonicalName = (row.merchant_name || '').toLowerCase();
+    const hasMatch = namesInput.some(n => n && (canonicalName.includes(n) || n.includes(canonicalName)));
+    if (!hasMatch) {
+      return { ok: false, error: `⚠️ Merchant ID y Merchant Name no corresponden (ID ${id} → "${row.merchant_name}").` };
+    }
+    if (row.merchant_channel) channels.add(String(row.merchant_channel).toLowerCase());
+  }
+
+  let canal = 'Ambos';
+  if (channels.size === 1) {
+    const c = [...channels][0];
+    canal = c.includes('online') ? 'Online' : c.includes('offline') ? 'Offline' : 'Ambos';
+  }
+
+  return { ok: true, canal };
+}
+
+// ── Alerta de código de cupón duplicado ─────────────────────
+// Requiere que el Apps Script tenga un branch para action: 'checkCode' que
+// responda { exists: true/false } buscando el código en "Promociones Aplazo 2026".
+// Si el Apps Script no responde o truena, NO se bloquea el flujo (fail-open).
+async function checkCodeExists(codigo) {
+  if (!codigo || codigo.trim().toUpperCase() === 'NA') return false;
+  try {
+    const res = await fetch(process.env.APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret: process.env.APPS_SCRIPT_SECRET,
+        action: 'checkCode',
+        codigo,
+      }),
+    });
+    const data = await res.json();
+    return !!data.exists;
+  } catch (err) {
+    console.error('No se pudo validar duplicado de código en Apps Script:', err);
+    return false;
+  }
 }
 function reqLabel(text) { return { type: 'plain_text', text: `${text} *` }; }
 function hintBlock(text) { return { type: 'context', elements: [{ type: 'mrkdwn', text }] }; }
@@ -105,9 +218,11 @@ function blocksPage2(a) {
       element: { type: 'plain_text_input', action_id: 'merchant_id_compra', multiline: true, ...(a.merchant_id_compra ? { initial_value: a.merchant_id_compra } : {}) } },
     hintBlock(MERCHANT_ID_HINT),
     { type: 'input', block_id: 'b_merchant_channel', label: reqLabel('Merchant channel'),
+    { type: 'input', block_id: 'b_merchant_channel', label: { type: 'plain_text', text: 'Merchant channel' }, optional: true,
       element: { type: 'static_select', action_id: 'merchant_channel',
         options: ['Online', 'Offline', 'Ambos'].map(t => opt(t, t)),
         ...(a.merchant_channel ? { initial_option: opt(a.merchant_channel, a.merchant_channel) } : {}) } },
+    hintBlock('Se calcula automáticamente a partir de los Merchant IDs al darle "Siguiente"; ajústalo solo si hace falta.'),
   ];
 }
 
@@ -166,6 +281,11 @@ function blocksPageSimple(a) {
       element: { type: 'static_select', action_id: 'merchant_channel_simple',
         options: ['Online', 'Offline', 'Ambos'].map(t => opt(t, t)),
         ...(a.merchant_channel_simple ? { initial_option: opt(a.merchant_channel_simple, a.merchant_channel_simple) } : {}) } },
+    { type: 'input', block_id: 'b_merchant_channel_simple', label: { type: 'plain_text', text: 'Merchant channel' }, optional: true,
+      element: { type: 'static_select', action_id: 'merchant_channel_simple',
+        options: ['Online', 'Offline', 'Ambos'].map(t => opt(t, t)),
+        ...(a.merchant_channel_simple ? { initial_option: opt(a.merchant_channel_simple, a.merchant_channel_simple) } : {}) } },
+    hintBlock('Se calcula automáticamente a partir de los Merchant IDs al darle "Siguiente"; ajústalo solo si hace falta.'),
     { type: 'input', block_id: 'b_business_line_simple', label: reqLabel('Merchant business line'),
       element: { type: 'multi_static_select', action_id: 'business_line_simple',
         options: BUSINESS_LINE_OPTIONS.map(t => opt(t, t)),
@@ -196,6 +316,19 @@ function blocksPage5(a) {
     element: { type: 'static_select', action_id: 'pay_now',
       options: ['Sí', 'No'].map(t => opt(t, t)),
       ...(a.pay_now ? { initial_option: opt(a.pay_now, a.pay_now) } : {}) } });
+    blocks.push({ type: 'input', block_id: 'b_audiencia_especifica', label: reqLabel('Adjunta liga al archivo con el segmento'),
+      element: { type: 'plain_text_input', action_id: 'audiencia_especifica', ...(a.audiencia_especifica ? { initial_value: a.audiencia_especifica } : {}) } });
+  }
+  blocks.push(
+    { type: 'input', block_id: 'b_business_line', label: reqLabel('Business line'),
+      element: { type: 'multi_static_select', action_id: 'business_line',
+        options: BUSINESS_LINE_OPTIONS.map(t => opt(t, t)),
+        ...(a.business_line && a.business_line.length ? { initial_options: findOpts(BUSINESS_LINE_OPTIONS.map(t => opt(t, t)), a.business_line) } : {}) } },
+    { type: 'input', block_id: 'b_pay_now', label: reqLabel('¿Incluye Pay Now?'),
+      element: { type: 'static_select', action_id: 'pay_now',
+        options: ['Sí', 'No'].map(t => opt(t, t)),
+        ...(a.pay_now ? { initial_option: opt(a.pay_now, a.pay_now) } : {}) } }
+  );
   return blocks;
 }
 
@@ -213,6 +346,9 @@ function blocksPage6(a) {
   if (a.aprobado === 'Sí') {
     blocks.push({ type: 'input', block_id: 'b_aprobado_por', label: reqLabel('¿Por quién?'),
       element: { type: 'plain_text_input', action_id: 'aprobado_por', ...(a.aprobado_por ? { initial_value: a.aprobado_por } : {}) } });
+      element: { type: 'static_select', action_id: 'aprobado_por',
+        options: APPROVER_OPTIONS,
+        ...(a.aprobado_por ? { initial_option: findOpt(APPROVER_OPTIONS, a.aprobado_por) } : {}) } });
   }
   return blocks;
 }
@@ -301,6 +437,8 @@ function validateRow(a) {
 app.command('/promo-request', async ({ ack, body, client }) => {
   await ack();
   await client.views.open({ trigger_id: body.trigger_id, view: buildView('p1', {}) });
+  // Requester se autocompleta con quien está usando el modal
+  await client.views.open({ trigger_id: body.trigger_id, view: buildView('p1', { requester: body.user_id }) });
 });
 
 // ── Carga masiva vía CSV ──────────────────────────────────────
@@ -458,6 +596,107 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
   }
 });
 
+});
+
+// Convierte una fila cruda del CSV (headers en español) a un objeto con las mismas llaves que usa el modal
+function normalizeCsvRow(rawRow) {
+  const a = {};
+  for (const key in rawRow) {
+    const mapped = CSV_HEADER_MAP[key.trim().toLowerCase()];
+    if (mapped) a[mapped] = (rawRow[key] || '').trim();
+  }
+  // Tipo: el CSV trae el texto visible (ej. "Reto", "Campaña de cashback"), hay que convertirlo al valor interno
+  if (a.tipo) {
+    a.tipo = valueFromText(TIPO_OPTIONS, a.tipo) || a.tipo;
+  }
+  // Business line: puede venir "BNPL, Walmart" → arreglo
+  if (a.business_line) {
+    a.business_line = a.business_line.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  return a;
+}
+
+app.view('promo_bulk_submit', async ({ ack, body, client }) => {
+  await ack();
+  const values = extractStateValuesRaw(body.view.state.values);
+  const equipo = values.equipo_bulk;
+  const fileInfo = (body.view.state.values.b_archivo_csv.archivo_csv.files || [])[0];
+  const requesterId = body.user.id;
+
+  if (!fileInfo) {
+    if (process.env.SLACK_CHANNEL_ID) {
+      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: `⚠️ <@${requesterId}> intentó una carga masiva sin adjuntar archivo.` });
+    }
+    return;
+  }
+
+  try {
+    // Descargar el contenido del CSV (archivo privado, requiere el Bot Token en el header)
+    const fileMeta = await client.files.info({ file: fileInfo.id });
+    const url = fileMeta.file.url_private_download;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+    const csvText = await res.text();
+
+    const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+    const rows = parsed.data;
+
+    let exitosas = 0;
+    const erroresPorFila = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const a = normalizeCsvRow(rows[i]);
+      a.equipo = equipo;
+      a.requester = requesterId;
+
+      const errores = validateRow(a);
+      if (errores.length) {
+        erroresPorFila.push(`Fila ${i + 2}: ${errores.join('; ')}`); // +2 = considerar header + índice 1-based
+        continue;
+      }
+
+      let requesterEmail = '';
+      try {
+        const info = await client.users.info({ user: requesterId });
+        requesterEmail = info.user.profile.email || '';
+      } catch (err) { /* se deja vacío si falla */ }
+
+      const payload = {
+        secret: process.env.APPS_SCRIPT_SECRET,
+        requesterEmail,
+        ...a,
+        business_line: Array.isArray(a.business_line) ? a.business_line.join(', ') : a.business_line,
+      };
+
+      try {
+        await fetch(process.env.APPS_SCRIPT_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        exitosas++;
+      } catch (err) {
+        erroresPorFila.push(`Fila ${i + 2}: error al escribir en Sheets (${err.message})`);
+      }
+    }
+
+    const resumen = [
+      `📦 *Carga masiva procesada*`,
+      `Requester: <@${requesterId}> (${equipo})`,
+      `✅ ${exitosas} promociones documentadas`,
+      erroresPorFila.length ? `⚠️ ${erroresPorFila.length} filas con error:\n${erroresPorFila.map(e => `• ${e}`).join('\n')}` : null,
+    ].filter(Boolean).join('\n');
+
+    if (process.env.SLACK_CHANNEL_ID) {
+      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: resumen });
+    }
+  } catch (err) {
+    console.error('Error procesando carga masiva:', err);
+    if (process.env.SLACK_CHANNEL_ID) {
+      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: `❌ <@${requesterId}> la carga masiva falló: ${err.message}` });
+    }
+  }
+});
+
 // Extrae valores simples (static_select, texto) de un state.values, sin los tipos especiales del modal principal
 function extractStateValuesRaw(values) {
   const result = {};
@@ -474,6 +713,7 @@ function extractStateValuesRaw(values) {
 app.view('promo_step_view', async ({ ack, body }) => {
   const meta = JSON.parse(body.view.private_metadata || '{}');
   const merged = { ...meta.answers, ...extractStateValues(body.view.state.values) };
+
   if (meta.step === 'p2') {
     const errors = validatePage2(merged);
     if (Object.keys(errors).length) {
@@ -481,6 +721,42 @@ app.view('promo_step_view', async ({ ack, body }) => {
       return;
     }
   }
+
+    try {
+      const result = await validateMerchantsBatch(merged.merchant_id_compra, merged.merchant_name_compra);
+      if (!result.ok) {
+        await ack({ response_action: 'errors', errors: { b_merchant_name_compra: result.error } });
+        return;
+      }
+      merged.merchant_channel = result.canal;
+    } catch (err) {
+      console.error('Error validando merchants contra BigQuery:', err);
+      await ack({ response_action: 'errors', errors: { b_merchant_id_compra: 'No se pudo validar los Merchant IDs en este momento. Intenta de nuevo.' } });
+      return;
+    }
+
+    const duplicado = await checkCodeExists(merged.codigo);
+    if (duplicado) {
+      await ack({ response_action: 'errors', errors: { b_codigo: `⚠️ El código "${merged.codigo}" ya existe en Promociones Aplazo 2026. Usa uno distinto o verifica antes de continuar.` } });
+      return;
+    }
+  }
+
+  if (meta.step === 'p_simple') {
+    try {
+      const result = await validateMerchantsBatch(merged.merchant_id_simple, merged.merchant_name_simple);
+      if (!result.ok) {
+        await ack({ response_action: 'errors', errors: { b_merchant_name_simple: result.error } });
+        return;
+      }
+      merged.merchant_channel_simple = result.canal;
+    } catch (err) {
+      console.error('Error validando merchants contra BigQuery:', err);
+      await ack({ response_action: 'errors', errors: { b_merchant_id_simple: 'No se pudo validar los Merchant IDs en este momento. Intenta de nuevo.' } });
+      return;
+    }
+  }
+
   const to = nextStep(meta.step, merged);
   await ack({ response_action: 'update', view: buildView(to, merged) });
 });
@@ -547,6 +823,9 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
 
   const aprobacionLinea = a.aprobado === 'Sí'
     ? `✅ Descuento ya aprobado por ${a.aprobado_por || 'N/A'}`
+  const aprobadorOpt = a.aprobado === 'Sí' ? findOpt(APPROVER_OPTIONS, a.aprobado_por) : null;
+  const aprobacionLinea = a.aprobado === 'Sí'
+    ? `✅ Descuento ya aprobado por *${aprobadorOpt ? aprobadorOpt.text.text : (a.aprobado_por || 'N/A')}*`
     : `⚠️ Pendiente de aprobación — atención <@${tagUser}>`;
 
   const resumen = [
