@@ -275,6 +275,24 @@ function validatePage2(a) {
 
 // Validación compartida entre el modal individual y la carga masiva (una sola fuente de verdad).
 // A medida que se definan más reglas de negocio, agregarlas aquí para que apliquen a ambos flujos.
+// Consulta al Apps Script si un código de cupón ya fue usado antes (en cualquier pestaña).
+// No aplica si el código viene vacío o es "NA" (nada que checar).
+async function checkCodigoExists(codigo) {
+  if (!codigo || codigo.trim().toUpperCase() === 'NA') return false;
+  try {
+    const res = await fetch(process.env.APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: process.env.APPS_SCRIPT_SECRET, action: 'checkCode', codigo }),
+    });
+    const json = await res.json();
+    return !!json.exists;
+  } catch (err) {
+    console.error('Error al verificar código duplicado (se deja pasar para no bloquear):', err);
+    return false; // si falla la consulta, no bloqueamos el submit — solo se pierde la protección esta vez
+  }
+}
+
 function validateRow(a) {
   const errores = [];
   if (!a.tipo) errores.push('Tipo de promoción vacío o no reconocido (revisa que coincida con el texto exacto de las opciones)');
@@ -440,6 +458,13 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
         continue;
       }
 
+      // ── Chequeo de código duplicado — igual que en el modal individual ──
+      const yaExiste = await checkCodigoExists(a.codigo);
+      if (yaExiste) {
+        erroresPorFila.push(`Fila ${i + 2}: el código "${a.codigo}" ya existe en el sheet, no se documentó`);
+        continue;
+      }
+
       let requesterEmail = '';
       try {
         const info = await client.users.info({ user: requesterId });
@@ -545,6 +570,16 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
     console.error('No se pudo resolver el correo del requester:', err);
   }
 
+  // ── Chequeo de código duplicado — si ya existe, se aborta antes de escribir a Sheets ──
+  const yaExiste = await checkCodigoExists(a.codigo);
+  if (yaExiste) {
+    await client.chat.postMessage({
+      channel: a.requester,
+      text: `⚠️ Tu solicitud de promoción con código *${a.codigo}* no se documentó porque ese código ya existe en el sheet. Vuelve a correr \`/promo-request\` con un código distinto.`,
+    });
+    return;
+  }
+
   let tagUser = null;
   if (a.aprobado === 'No') {
     tagUser = a.audiencia === 'Nuevos' ? APPROVER_NEW_USERS : APPROVER_OTHER;
@@ -598,3 +633,4 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
   await app.start(port);
   console.log(`⚡ Promo Slack App corriendo en puerto ${port}`);
 })();
+
