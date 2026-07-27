@@ -417,9 +417,7 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
   const requesterId = body.user.id;
 
   if (!fileInfo) {
-    if (process.env.SLACK_CHANNEL_ID) {
-      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: `⚠️ <@${requesterId}> intentó una carga masiva sin adjuntar archivo.` });
-    }
+    await client.chat.postMessage({ channel: requesterId, text: `⚠️ Tu carga masiva no se procesó porque no adjuntaste ningún archivo. Corre \`/promo-bulk\` de nuevo y adjunta el CSV.` });
     return;
   }
 
@@ -437,10 +435,8 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
     // se aborta todo el archivo con un mensaje claro, en vez de generar errores confusos por fila.
     const columnasFaltantes = validateCsvHeader(parsed.meta.fields);
     if (columnasFaltantes.length) {
-      const mensaje = `❌ <@${requesterId}> el archivo no tiene el formato correcto. Faltan estas columnas: ${columnasFaltantes.join(', ')}. Revisa que estés usando la plantilla más reciente.`;
-      if (process.env.SLACK_CHANNEL_ID) {
-        await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: mensaje });
-      }
+      const mensaje = `❌ Tu carga masiva no se procesó: el archivo no tiene el formato correcto. Faltan estas columnas: ${columnasFaltantes.join(', ')}. Revisa que estés usando la plantilla más reciente.`;
+      await client.chat.postMessage({ channel: requesterId, text: mensaje });
       return;
     }
 
@@ -490,21 +486,28 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
       }
     }
 
-    const resumen = [
-      `📦 *Carga masiva procesada*`,
-      `Requester: <@${requesterId}> (${equipo})`,
-      `✅ ${exitosas} promociones documentadas`,
-      erroresPorFila.length ? `⚠️ ${erroresPorFila.length} filas con error:\n${erroresPorFila.map(e => `• ${e}`).join('\n')}` : null,
-    ].filter(Boolean).join('\n');
-
+    // ── Éxito → canal (visibilidad del equipo) ──
     if (process.env.SLACK_CHANNEL_ID) {
-      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: resumen });
+      const resumenCanal = [
+        `📦 *Carga masiva procesada*`,
+        `Requester: <@${requesterId}> (${equipo})`,
+        `✅ ${exitosas} promociones documentadas`,
+        erroresPorFila.length ? `⚠️ ${erroresPorFila.length} fila(s) con error — detalle enviado por DM a <@${requesterId}>` : null,
+      ].filter(Boolean).join('\n');
+      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: resumenCanal });
+    }
+
+    // ── Errores → DM al requester (no al canal) ──
+    if (erroresPorFila.length) {
+      const resumenDM = [
+        `⚠️ *Tu carga masiva tuvo ${erroresPorFila.length} fila(s) con error:*`,
+        erroresPorFila.map(e => `• ${e}`).join('\n'),
+      ].join('\n');
+      await client.chat.postMessage({ channel: requesterId, text: resumenDM });
     }
   } catch (err) {
     console.error('Error procesando carga masiva:', err);
-    if (process.env.SLACK_CHANNEL_ID) {
-      await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: `❌ <@${requesterId}> la carga masiva falló: ${err.message}` });
-    }
+    await client.chat.postMessage({ channel: requesterId, text: `❌ Tu carga masiva falló por un error inesperado: ${err.message}` });
   }
 });
 
