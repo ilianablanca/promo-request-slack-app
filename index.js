@@ -277,6 +277,29 @@ function validatePage2(a) {
 // A medida que se definan más reglas de negocio, agregarlas aquí para que apliquen a ambos flujos.
 // Consulta al Apps Script si un código de cupón ya fue usado antes (en cualquier pestaña).
 // No aplica si el código viene vacío o es "NA" (nada que checar).
+// Consulta al Apps Script si los Merchant id(s) existen en dim_merchant y si el/los nombre(s)
+// coinciden (por posición). Devuelve un arreglo de mensajes de error (vacío si todo está bien).
+async function checkMerchantsValid(merchantId, merchantName) {
+  if (!merchantId) return [];
+  try {
+    const res = await fetch(process.env.APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret: process.env.APPS_SCRIPT_SECRET,
+        action: 'checkMerchants',
+        merchant_id: merchantId,
+        merchant_name: merchantName,
+      }),
+    });
+    const json = await res.json();
+    return json.errores || [];
+  } catch (err) {
+    console.error('Error al verificar merchants contra BigQuery (se deja pasar para no bloquear):', err);
+    return []; // si falla la consulta, no bloqueamos el submit — solo se pierde la protección esta vez
+  }
+}
+
 async function checkCodigoExists(codigo) {
   if (!codigo || codigo.trim().toUpperCase() === 'NA') return false;
   try {
@@ -461,6 +484,13 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
         continue;
       }
 
+      // ── Chequeo de Merchant id/name contra BigQuery (dim_merchant) ──
+      const erroresMerchant = await checkMerchantsValid(a.merchant_id_compra, a.merchant_name_compra);
+      if (erroresMerchant.length) {
+        erroresPorFila.push(`Fila ${i + 2}: ${erroresMerchant.join('; ')}`);
+        continue;
+      }
+
       let requesterEmail = '';
       try {
         const info = await client.users.info({ user: requesterId });
@@ -579,6 +609,18 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
     await client.chat.postMessage({
       channel: a.requester,
       text: `⚠️ Tu solicitud de promoción con código *${a.codigo}* no se documentó porque ese código ya existe en el sheet. Vuelve a correr \`/promo-request\` con un código distinto.`,
+    });
+    return;
+  }
+
+  // ── Chequeo de Merchant id/name contra BigQuery (dim_merchant) ──
+  const merchantIdParaCheck = a.merchant_id_compra || a.merchant_id_simple || '';
+  const merchantNameParaCheck = a.merchant_name_compra || a.merchant_name_simple || '';
+  const erroresMerchant = await checkMerchantsValid(merchantIdParaCheck, merchantNameParaCheck);
+  if (erroresMerchant.length) {
+    await client.chat.postMessage({
+      channel: a.requester,
+      text: [`⚠️ Tu solicitud no se documentó por un problema con los merchants:`, ...erroresMerchant.map(e => `• ${e}`), `Vuelve a correr \`/promo-request\` con los datos corregidos.`].join('\n'),
     });
     return;
   }
