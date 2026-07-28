@@ -147,7 +147,7 @@ function blocksPagePuntos(a) {
 }
 
 function blocksPageSimple(a) {
-  return [
+  const blocks = [
     { type: 'input', block_id: 'b_minimo_compra_simple', label: reqLabel('Monto mínimo de compra'),
       element: { type: 'plain_text_input', action_id: 'minimo_compra_simple', ...(a.minimo_compra_simple ? { initial_value: a.minimo_compra_simple } : {}) } },
     { type: 'input', block_id: 'b_fecha_inicio_simple', label: reqLabel('Fecha inicio'),
@@ -170,11 +170,17 @@ function blocksPageSimple(a) {
       element: { type: 'multi_static_select', action_id: 'business_line_simple',
         options: BUSINESS_LINE_OPTIONS.map(t => opt(t, t)),
         ...(a.business_line_simple && a.business_line_simple.length ? { initial_options: findOpts(BUSINESS_LINE_OPTIONS.map(t => opt(t, t)), a.business_line_simple) } : {}) } },
-    { type: 'input', block_id: 'b_pay_now_simple', label: reqLabel('¿Incluye Pay Now?'),
+  ];
+
+  // 0 downpayment no incluye Pay Now por default — no tiene sentido combinarlo, así que ni se pregunta
+  if (a.tipo !== 'downpayment0') {
+    blocks.push({ type: 'input', block_id: 'b_pay_now_simple', label: reqLabel('¿Incluye Pay Now?'),
       element: { type: 'static_select', action_id: 'pay_now_simple',
         options: ['Sí', 'No'].map(t => opt(t, t)),
-        ...(a.pay_now_simple ? { initial_option: opt(a.pay_now_simple, a.pay_now_simple) } : {}) } },
-  ];
+        ...(a.pay_now_simple ? { initial_option: opt(a.pay_now_simple, a.pay_now_simple) } : {}) } });
+  }
+
+  return blocks;
 }
 
 function blocksPage5(a) {
@@ -201,6 +207,17 @@ function blocksPage5(a) {
 
 function blocksPage6(a) {
   const blocks = [
+    { type: 'input', block_id: 'b_objetivo_promo', label: { type: 'plain_text', text: '¿Cuál es el objetivo de tu promo?' }, optional: true,
+      element: { type: 'plain_text_input', action_id: 'objetivo_promo', multiline: true,
+        ...(a.objetivo_promo ? { initial_value: a.objetivo_promo } : {}) } },
+    hintBlock('Ej: Incrementar GMV del comercio en 30%, adquirir nuevos usuarios para el canal Walmart, descuento negociado para lanzar X comercio, etc.'),
+    { type: 'input', block_id: 'b_budget_estimado', label: { type: 'plain_text', text: 'Budget estimado' }, optional: true,
+      element: { type: 'plain_text_input', action_id: 'budget_estimado', placeholder: { type: 'plain_text', text: 'Número, o NA si no aplica' },
+        ...(a.budget_estimado ? { initial_value: a.budget_estimado } : {}) } },
+    { type: 'input', block_id: 'b_estrategia_comunicacion', label: { type: 'plain_text', text: '¿Cuál es la estrategia de comunicación?' }, optional: true,
+      element: { type: 'plain_text_input', action_id: 'estrategia_comunicacion', multiline: true,
+        ...(a.estrategia_comunicacion ? { initial_value: a.estrategia_comunicacion } : {}) } },
+    hintBlock('Ej: campaña de CRM para usuarios recurrentes, material POP en 3 sucursales, este descuento no se comunicará, etc.'),
     { type: 'input', block_id: 'b_comentarios', label: { type: 'plain_text', text: 'Comentarios adicionales' }, optional: true,
       element: { type: 'plain_text_input', action_id: 'comentarios', multiline: true,
         placeholder: { type: 'plain_text', text: 'Ej. cupón válido para merchant X en fecha Y, y merchant Z en fecha W; o lista/segmento específico de usuarios' },
@@ -484,12 +501,7 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
         continue;
       }
 
-      // ── Chequeo de Merchant id/name contra BigQuery (dim_merchant) ──
-      const erroresMerchant = await checkMerchantsValid(a.merchant_id_compra, a.merchant_name_compra);
-      if (erroresMerchant.length) {
-        erroresPorFila.push(`Fila ${i + 2}: ${erroresMerchant.join('; ')}`);
-        continue;
-      }
+      // ── Chequeo de Merchant id/name contra BigQuery: pausado por ahora ──
 
       let requesterEmail = '';
       try {
@@ -591,9 +603,15 @@ app.action('aprobado', async ({ ack, body, client }) => {
 });
 
 app.view('promo_final_submit', async ({ ack, body, client }) => {
-  await ack();
   const meta = JSON.parse(body.view.private_metadata || '{}');
   const a = { ...meta.answers, ...extractStateValues(body.view.state.values) };
+
+  if (a.budget_estimado && a.budget_estimado.toUpperCase() !== 'NA' && !NUMERIC_RE.test(a.budget_estimado)) {
+    await ack({ response_action: 'errors', errors: { b_budget_estimado: 'Escribe solo un número, o NA si no aplica.' } });
+    return;
+  }
+
+  await ack();
 
   let requesterEmail = '';
   try {
@@ -613,21 +631,16 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
     return;
   }
 
-  // ── Chequeo de Merchant id/name contra BigQuery (dim_merchant) ──
-  const merchantIdParaCheck = a.merchant_id_compra || a.merchant_id_simple || '';
-  const merchantNameParaCheck = a.merchant_name_compra || a.merchant_name_simple || '';
-  const erroresMerchant = await checkMerchantsValid(merchantIdParaCheck, merchantNameParaCheck);
-  if (erroresMerchant.length) {
-    await client.chat.postMessage({
-      channel: a.requester,
-      text: [`⚠️ Tu solicitud no se documentó por un problema con los merchants:`, ...erroresMerchant.map(e => `• ${e}`), `Vuelve a correr \`/promo-request\` con los datos corregidos.`].join('\n'),
-    });
-    return;
-  }
+  // ── Chequeo de Merchant id/name contra BigQuery: pausado por ahora (checkMerchantsValid queda definida, sin usarse) ──
 
   let tagUser = null;
   if (a.aprobado === 'No') {
     tagUser = a.audiencia === 'Nuevos' ? APPROVER_NEW_USERS : APPROVER_OTHER;
+  }
+
+  // 0 downpayment no incluye Pay Now por default (ni se preguntó en el formulario)
+  if (a.tipo === 'downpayment0') {
+    a.pay_now_simple = 'No';
   }
 
   const payload = {
