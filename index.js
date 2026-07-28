@@ -13,7 +13,7 @@ const APPROVER_NEW_USERS = 'U0AKGADMDCH'; // tú
 const APPROVER_OTHER = 'U09QUKD5AUR';     // María Cervantes
 
 const TIPOS_CON_PUNTOS = ['cashback', 'reto', 'award'];
-const TIPOS_FORM_SIMPLE = ['fee0', 'downpayment0'];
+const TIPOS_FORM_SIMPLE = ['fee0'];
 const TIPOS_COMO_PROMOCODE = ['promocode', 'afiliados'];
 
 const TIPO_OPTIONS = [
@@ -22,7 +22,6 @@ const TIPO_OPTIONS = [
   { text: { type: 'plain_text', text: 'Reto' }, value: 'reto' },
   { text: { type: 'plain_text', text: 'Award' }, value: 'award' },
   { text: { type: 'plain_text', text: '0% fee' }, value: 'fee0' },
-  { text: { type: 'plain_text', text: '0 downpayment' }, value: 'downpayment0' },
   { text: { type: 'plain_text', text: 'Descuento Afiliados' }, value: 'afiliados' },
   { text: { type: 'plain_text', text: 'Automática' }, value: 'automatica' },
   { text: { type: 'plain_text', text: 'Otro' }, value: 'otro' },
@@ -170,15 +169,11 @@ function blocksPageSimple(a) {
       element: { type: 'multi_static_select', action_id: 'business_line_simple',
         options: BUSINESS_LINE_OPTIONS.map(t => opt(t, t)),
         ...(a.business_line_simple && a.business_line_simple.length ? { initial_options: findOpts(BUSINESS_LINE_OPTIONS.map(t => opt(t, t)), a.business_line_simple) } : {}) } },
-  ];
-
-  // 0 downpayment no incluye Pay Now por default — no tiene sentido combinarlo, así que ni se pregunta
-  if (a.tipo !== 'downpayment0') {
-    blocks.push({ type: 'input', block_id: 'b_pay_now_simple', label: reqLabel('¿Incluye Pay Now?'),
+    { type: 'input', block_id: 'b_pay_now_simple', label: reqLabel('¿Incluye Pay Now?'),
       element: { type: 'static_select', action_id: 'pay_now_simple',
         options: ['Sí', 'No'].map(t => opt(t, t)),
-        ...(a.pay_now_simple ? { initial_option: opt(a.pay_now_simple, a.pay_now_simple) } : {}) } });
-  }
+        initial_option: opt(a.pay_now_simple || 'No', a.pay_now_simple || 'No') } },
+  ];
 
   return blocks;
 }
@@ -636,11 +631,6 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
   let tagUser = null;
   if (a.aprobado === 'No') {
     tagUser = a.audiencia === 'Nuevos' ? APPROVER_NEW_USERS : APPROVER_OTHER;
-  }
-
-  // 0 downpayment no incluye Pay Now por default (ni se preguntó en el formulario)
-  if (a.tipo === 'downpayment0') {
-    a.pay_now_simple = 'No';
   }
 
   const payload = {
