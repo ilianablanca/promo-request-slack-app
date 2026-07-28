@@ -54,6 +54,28 @@ function extractStateValues(values) {
 function opt(text, value) { return { text: { type: 'plain_text', text }, value }; }
 function findOpt(options, value) { return options.find(o => o.value === value); }
 function findOpts(options, values) { return options.filter(o => (values || []).includes(o.value)); }
+
+// Convierte el valor interno de Tipo (ej. 'reto') al texto visible (ej. 'Reto') para mensajes en Slack
+function tipoDisplay(tipoValue) {
+  const found = findOpt(TIPO_OPTIONS, tipoValue);
+  return found ? found.text.text : (tipoValue || 'NA');
+}
+
+// Arma la línea de "Descuento" del resumen, distinta según la ruta (normal vs. corta)
+function formatDescuentoLinea(a) {
+  if (isFormSimple(a)) {
+    const minimo = a.minimo_compra_simple || 'NA';
+    return `💸 Mínimo de compra: ${minimo}`;
+  }
+  const valor = a.valor_descuento || 'NA';
+  const tipoDesc = a.tipo_descuento || '';
+  let descuentoStr;
+  if (tipoDesc === '%') descuentoStr = `${valor}%`;
+  else if (tipoDesc === '$') descuentoStr = `$${valor}`;
+  else descuentoStr = tipoDesc ? `${valor} (${tipoDesc})` : valor;
+  const minimoValido = a.minimo_compra && a.minimo_compra.toUpperCase() !== 'NA';
+  return `💸 Descuento: ${descuentoStr}${minimoValido ? ` · Mínimo de compra: ${a.minimo_compra}` : ''}`;
+}
 function valueFromText(options, text) {
   if (!text) return null;
   const t = text.trim().toLowerCase();
@@ -477,6 +499,7 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
 
     let exitosas = 0;
     const erroresPorFila = [];
+    const conteoTipos = {}; // ej. { 'Promocode': 2, 'Reto': 1 }
 
     for (let i = 0; i < rows.length; i++) {
       const a = normalizeCsvRow(rows[i]);
@@ -518,6 +541,8 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
           body: JSON.stringify(payload),
         });
         exitosas++;
+        const tipoLabel = tipoDisplay(a.tipo);
+        conteoTipos[tipoLabel] = (conteoTipos[tipoLabel] || 0) + 1;
       } catch (err) {
         erroresPorFila.push(`Fila ${i + 2}: error al escribir en Sheets (${err.message})`);
       }
@@ -525,10 +550,11 @@ app.view('promo_bulk_submit', async ({ ack, body, client }) => {
 
     // ── Éxito → canal (visibilidad del equipo) ──
     if (process.env.SLACK_CHANNEL_ID) {
+      const desgloseTipos = Object.entries(conteoTipos).map(([tipo, n]) => `${n} ${tipo}`).join(', ');
       const resumenCanal = [
         `📦 *Carga masiva procesada*`,
-        `Requester: <@${requesterId}> (${equipo})`,
-        `✅ ${exitosas} promociones documentadas`,
+        `👤 Requester: <@${requesterId}> (${equipo})`,
+        `✅ ${exitosas} promociones documentadas${desgloseTipos ? ` (${desgloseTipos})` : ''}`,
         erroresPorFila.length ? `⚠️ ${erroresPorFila.length} fila(s) con error — detalle enviado por DM a <@${requesterId}>` : null,
       ].filter(Boolean).join('\n');
       await client.chat.postMessage({ channel: process.env.SLACK_CHANNEL_ID, text: resumenCanal });
@@ -659,11 +685,13 @@ app.view('promo_final_submit', async ({ ack, body, client }) => {
 
   const resumen = [
     `🎟️ *Nueva solicitud de promoción*`,
-    `Requester: <@${a.requester}> (${a.equipo})`,
-    isFormSimple(a) ? `Tipo: ${a.tipo}` : `Tipo: ${a.tipo} · Código: ${a.codigo || 'NA'}`,
-    `Vigencia: ${a.fecha_inicio} – ${a.fecha_fin}`,
+    `👤 Requester: <@${a.requester}> (${a.equipo})`,
+    isFormSimple(a) ? `🏷️ Tipo: ${tipoDisplay(a.tipo)}` : `🏷️ Tipo: ${tipoDisplay(a.tipo)} · Código: ${a.codigo || 'NA'}`,
+    formatDescuentoLinea(a),
+    `📅 Vigencia: ${a.fecha_inicio} → ${a.fecha_fin}`,
+    a.audiencia ? `🎯 Audiencia: ${a.audiencia}` : null,
     aprobacionLinea,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   if (process.env.SLACK_CHANNEL_ID) {
     try {
